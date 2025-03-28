@@ -1,0 +1,4 @@
+POST localhost:8080/inquire
+Content-Type: application/x-www-form-urlencoded
+
+question="Get employees that have skills related to Java, but not Java"
