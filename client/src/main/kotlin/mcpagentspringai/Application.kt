@@ -7,36 +7,36 @@ import org.springframework.ai.mcp.SyncMcpToolCallbackProvider
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.runApplication
-import org.springframework.context.annotation.Bean
 import org.springframework.web.bind.annotation.PostMapping
-import org.springframework.web.bind.annotation.RequestParam
+import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RestController
 
+
 @SpringBootApplication
-class Application {
-    @Bean
-    fun chatClient(@Value("\${mcp-service.url:http://localhost:8081}") url: String, builder: ChatClient.Builder): ChatClient {
+@RestController
+class Application(val chatClientBuilder: ChatClient.Builder) {
+
+    data class Prompt(val question: String)
+
+    @PostMapping("/inquire")
+    fun inquire(@Value("\${mcp-service.url:http://localhost:8081}") url: String, @RequestBody prompt: Prompt): String {
+
         val mcpClient = McpClient
             .sync(HttpClientSseClientTransport(url))
             .build()
         mcpClient.initialize()
 
-        return builder
-            .defaultTools(SyncMcpToolCallbackProvider(mcpClient))
-            .build()
+        mcpClient.listTools().tools().forEach { println(it) }
+
+        val chatClient = chatClientBuilder.build()
+
+        return chatClient
+            .prompt()
+            .tools(SyncMcpToolCallbackProvider(mcpClient))
+            .user(prompt.question)
+            .call()
+            .content() ?: "Please try again later."
     }
-}
-
-@RestController
-class ConversationalController(val chatClient: ChatClient) {
-
-    @PostMapping("/inquire")
-    fun inquire(@RequestParam question: String): String =
-        chatClient
-                .prompt()
-                .user(question)
-                .call()
-                .content() ?: "Please try again later."
 }
 
 

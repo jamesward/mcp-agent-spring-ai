@@ -12,14 +12,6 @@ dependencies {
     implementation("org.springframework.ai:spring-ai-mcp-server-webflux-spring-boot-starter")
 }
 
-/*
-dependencyManagement {
-    imports {
-        mavenBom("org.springframework.ai:spring-ai-bom:1.0.0-M6")
-    }
-}
-*/
-
 kotlin {
     jvmToolchain(21)
 }

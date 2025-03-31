@@ -1,0 +1,298 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Spring AI with Bedrock and MCP
+
+Resources:
+  ApplicationVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref ApplicationVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ApplicationVPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ApplicationVPC
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [1, !GetAZs '']
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ApplicationVPC
+      CidrBlock: 10.0.3.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ApplicationVPC
+      CidrBlock: 10.0.4.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [1, !GetAZs '']
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ApplicationVPC
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ApplicationVPC
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${AWS::StackName}-cluster
+
+  LogGroup:
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${AWS::StackName}
+      RetentionInDays: 1
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AWS::StackName}-task
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: mcp-agent-spring-ai-server
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/mcp-agent-spring-ai-server:latest
+          PortMappings:
+            - ContainerPort: 8081
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ECS Service
+      VpcId: !Ref ApplicationVPC
+      SecurityGroupIngress:
+        - FromPort: 8081
+          ToPort: 8081
+          IpProtocol: tcp
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+
+  ServiceDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: mcp-service
+      DnsConfig:
+        NamespaceId: !Ref ServiceDiscoveryNamespace
+        DnsRecords:
+          - Type: A
+            TTL: 60
+
+  ServiceDiscoveryNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: demo.local
+      Vpc: !Ref ApplicationVPC
+
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub ${AWS::StackName}-service
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      ServiceRegistries:
+        - RegistryArn: !GetAtt ServiceDiscoveryService.Arn
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets:
+            - !Ref PrivateSubnet1
+            - !Ref PrivateSubnet2
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Lambda function
+      VpcId: !Ref ApplicationVPC
+      SecurityGroupEgress:
+        - Description: Allow all outbound traffic
+          IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: BedrockInvokeAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource:
+                  - arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0
+
+  MyApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+
+  SpringBootFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Handler: com.amazonaws.serverless.proxy.spring.SpringDelegatingLambdaContainerHandler
+      Runtime: java21
+      MemorySize: 2048
+      Timeout: 30
+      CodeUri: ./client
+      Environment:
+        Variables:
+          MAIN_CLASS: mcpagentspringai.Application
+          MCP_SERVICE_URL: http://mcp-service.demo.local:8081
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Events:
+        RootEndpoint:
+          Type: Api
+          Properties:
+            Path: /
+            Method: GET
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+            RestApiId: !Ref MyApi
+
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/
