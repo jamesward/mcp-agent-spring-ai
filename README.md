@@ -8,8 +8,8 @@ flowchart LR
         alb[Application Load Balancer]
         
         subgraph vpc[VPC]
-            server[MCP Server\nECS Service]
-            client[MCP Client / Bedrock Agent\nECS Service]
+            server[MCP Server - ECS Service]
+            client[MCP Client / Bedrock Agent - ECS Service]
         end
         
         subgraph services[AWS Services]
